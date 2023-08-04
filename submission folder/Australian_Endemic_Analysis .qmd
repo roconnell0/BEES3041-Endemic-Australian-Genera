@@ -1,0 +1,919 @@
+---
+title: "australian endemic Analysis"
+format: html
+editor: visual
+author: "Rory O'Connell"
+---
+
+# Study Objectives
+
+Our study aim was to compile a checklist on endemic vascular plant genera in Australia, for the use of further publications, research, and conservation efforts. With hopes to asses vulnerability, distribution, and functional traits of endemic plants. Objectives of this study include:
+
+1\) assemble a comprehensive list of Australian endemic plant flora using a wide collection of scientifically supported databases
+
+2\) Map distribution and habitat of Australian endemic plants
+
+3\) Identify endemic plants of greater risk and assess overall threatened status of Australian endemics
+
+4\) Compare and contrast functional similarities and differences between endemics and non-endemics
+
+## Loading Data
+
+```{r, Load Data}
+#| echo: false
+
+#load libraries
+library(tidyr) #For data manipulation/cleaning
+library(tidyverse) #For data manipulation/cleaning
+library(data.table) #For reading of messy data files
+library(ggplot2) #For graphical presentation
+#library(kableExtra) maybe remove
+
+#read csvs
+genus_end <- read.csv("data/australian_flora/genus_level_endemism_estimate.csv") #Australian Native Endemic list 2022
+
+wcvp <- fread(file = "data/wcvp/wcvp_names.csv", header = T) #WCVP data, contains taxonomic identifcation
+wcvp_distribution <- fread(file = "data/wcvp/wcvp_distribution.csv", header = T) #WCVP data, contains distribution and native region data , fread used to produce clean table format
+ng <- read.csv("data/other_countries_floras/sa_2022-07-12_072627325-BRAHMSOnlineData.csv") #New Guinea Dataset
+nz <- fread("data/other_countries_floras/checklistofthenewzealandflora-seedplantsseptember2020.tsv") #New Zealand dataset 1
+nz2 <- fread("data/other_countries_floras/checklistofthenewzealandflora-fernsandlycophytesseptember2020.tsv") #New zealand dataset 2 
+nc <- read.csv("data/other_countries_floras/Florical_vers_7_I_2022.csv") #New Caladonia dataset
+indo <- read.csv("data/other_countries_floras/oo_377596.csv") #Indonesia Dataset
+
+redlist <- read.csv(file = "data/REDLIST_Folder/simple_summary.csv", header = T) #IUCN Redlist Dataset
+```
+
+## Combining Datasets
+
+Seven initial datasets are used for this analysis. They include:
+
+-   World Checklist of Vascular Plants (WCVP)
+
+-   Indonesia Vascular Plants Checklist
+
+-   New Guinea Vascular Plants Checklist
+
+-   New Zealand Vascular Plants Checklist
+
+-   Australian Native Endemic Dataset
+
+-   New Caledonia Vascular Plants Checklist
+
+-   Atlas of Living Australia (Plantae)
+
+Each checklist will be filtered down to natively occurring genera. Remaining data once this has been completed will be added to the Australian Native Endemic Dataset.
+
+### Adding New Zealand Checklist
+
+```{r, New Zealand}
+nz <- rbind(nz, nz2) #combines the two nz datasets: nz and nz2 
+
+ausplants <- subset(genus_end, prop_endemic == 1) #make new df for genus that are possibly endemic (ie score a 1 on genus_end df)
+
+nz$Genus <- gsub("\\?", "", nz$Genus) #remove ? from genus column value in nz data
+
+#make a subset for the genus in nz data that appear to have no genus 
+no_genera_nz <- subset(nz, Genus == "")
+nz<-filter(nz, Origin!="Exotic")
+
+ausplants$nz <- ausplants$genus %in% nz$Genus
+```
+
+### Adding New Caledonia Checklist
+
+```{r, NC}
+ausplants$nc <- ausplants$genus %in% nc$Genre #adds new column to ausplants outlining whether each genus occured within the NC data
+```
+
+### Adding NG column
+
+```{r, NG}
+ausplants$ng <- ausplants$genus %in% ng$Genus
+```
+
+### Add Indonesian column
+
+```{r}
+ausplants$indo <- ausplants$genus %in% indo$Genus
+```
+
+### Combining WCVP Distribution 
+
+```{r, WCVP combine}
+wcvp_comb <- wcvp_distribution %>%
+  left_join(wcvp, by = 'plant_name_id')  #joins WCVP distribution and WCVP names as plant location and taxonomic ID are located in two seperate df
+
+wcvp_not_aus <- wcvp_comb %>%
+  filter(region != "Australia") #removing all Australian plants
+```
+
+### Adding WCVP Column
+
+```{r, WCVP Add}
+ausplants$wcvp <- ausplants$genus %in% 
+  wcvp_not_aus$genus 
+```
+
+### Adding ALA Data
+
+```{r}
+ww<-ausplants
+
+ala<-read_csv("all_ala.csv") #all ala plant records
+  group_by(ala,genus) %>%
+    summarise(prop_aus=(sum(countryCode=="AU",na.rm=T)/sum(!is.na(countryCode))), #calculates number of observations are Australian
+              n=sum(!is.na(countryCode)))->sum_ala #creates column for number of genera observations
+
+ww<-left_join(ww,sum_ala) #joins ww and ala data
+ww %>%
+  mutate(ala=prop_aus<0.99)->ww #filters to only include non-endemic data
+
+ww %>%
+  select(nz,nc,ng,wcvp,indo2,ala)->tst
+ww$rowsums<-rowSums(tst)
+
+ww$current_knowledge<-case_when(ww$rowsums>=2 ~ "non-endemic",
+          ww$rowsums==1 ~ "unclear",
+          ww$rowsums==0 ~ "endemic"
+          )
+
+table(ww$current_knowledge)
+write_csv(ww,"intermediate_data/five_sources_summary.csv")
+
+gen_int<-read_csv("ala_all_genera_of_interest.csv")
+
+only_int<-filter(ww,current_knowledge %in% c("unclear","endemic"))
+
+filter(gen_int,genus %in% only_int$genus) %>%
+  left_join(select(only_int,genus,current_knowledge)) %>%
+  write_csv("five_sources_summary.csv")
+  
+
+```
+
+## Adding Threatened Status and Austraits
+
+### Threatened Status
+
+Collected from the IUCN Redlist
+
+```{r}
+fivesource <- read.csv(file = "intermediate_data/five_sources_summary.csv", header = T) #reads fivesource data which contains all dataset information
+
+redlist <- redlist %>%
+  filter(genusName %in% fivesource$genus) #Filters redlist data to only include genera within fivesource data
+
+counts <- redlist %>% #Creating counts frame for each threatened status
+  group_by(genusName) %>%
+  count(redlistCategory) %>%
+  pivot_wider(names_from = redlistCategory, values_from = n, values_fill = NA) 
+
+# Join the counts with fivesource.trial based on genera2
+genus_with_status <- fivesource %>%
+  left_join(counts, by = c("genus" = "genusName")) %>% 
+  mutate_at(c(14:21), ~replace_na(.,0))
+
+```
+
+## Write CSV
+
+```{r}
+write_csv(genus_with_status,"intermediate_data/summary_current.csv")
+```
+
+## Attributing Status to Unclear Genera
+
+```{r}
+
+ausplants <- read_csv('intermediate_data/five_sources_summary.csv')
+
+#create new df with only 'unclear' genera
+unclear <- ausplants[ausplants$current_knowledge == 'unclear', ]
+
+#add reason column, to denote reason for confirming endemic/non-endemic status
+unclear$reason <- NA
+
+#add endemism status with reason for uncertainty/assessment
+unclear$current_knowledge[1] <- 'endemic' 
+unclear$reason[1] <- 'ALA taxonomy error'
+
+unclear$current_knowledge[2] <- 'non-endemic' 
+unclear$reason[2] <- 'taxonomy error'
+
+unclear$current_knowledge[3] <- 'endemic' 
+unclear$reason[3] <- 'POWO data error'
+
+unclear$current_knowledge[4] <- 'endemic' 
+unclear$reason[4] <- 'records from 1950s, PNG occurence from NSW Bot Gardens'
+
+unclear$current_knowledge[5] <- 'endemic' 
+unclear$reason[5] <- 'POWO data error'
+
+unclear$current_knowledge[6] <- 'endemic'
+unclear$reason[6] <- 'Indo data error'
+
+unclear$current_knowledge[7] <- 'endemic'
+unclear$reason[7] <- 'POWO data error'
+
+unclear$current_knowledge[8] <- 'non-endemic'
+unclear$reason[8] <- 'NC occurence'
+
+unclear$current_knowledge[9] <- 'non-endemic'
+unclear$reason[9] <- 'taxonomic error - synonym Machaerina used'
+
+unclear$current_knowledge[10] <- 'non-endemic'
+unclear$reason[10] <- 'PNG native'
+
+unclear$current_knowledge[11] <- 'endemic'
+unclear$reason[11] <- 'ALA data/shapefile error'
+
+unclear$current_knowledge[12] <- 'endemic'
+unclear$reason[12] <- 'ALA data/shapefile error'
+
+unclear$current_knowledge[13] <- 'endemic'
+unclear$reason[13] <- 'ornamental plant in UK'
+
+unclear$current_knowledge[14] <- 'endemic'
+unclear$reason[14] <- 'taxonomic uncertainty - WCVP says 4 species, zimbabwe flora mentions only 1 accepted species'
+
+unclear$current_knowledge[15] <- 'endemic'
+unclear$reason[15] <- 'ng data error'
+
+unclear$current_knowledge[16] <- 'non-endemic'
+unclear$reason[16] <- 'taxonomy error, NZ species'
+
+unclear$current_knowledge[17] <- 'endemic'
+unclear$reason[17] <- 'introduced NZ and California'
+
+unclear$current_knowledge[18] <- 'endemic'
+unclear$reason[18] <- 'introduced India'
+
+unclear$current_knowledge[19] <- 'non-endemic'
+unclear$reason[19] <- 'species found in South America'
+
+unclear$current_knowledge[20] <- 'endemic'
+unclear$reason[20] <- 'introduced ornamentals in UK'
+
+unclear$current_knowledge[21] <- 'non-endemic'
+unclear$reason[21] <- 'species found in Africa, Americas, South Asia etc'
+
+unclear$current_knowledge[22] <- 'endemic'
+unclear$reason[22] <- 'taxonomic confusion, tasmania only'
+
+unclear$current_knowledge[23] <- 'non-endemic'
+unclear$reason[23] <- 'species found in Africa, Americas, South Asia etc'
+
+unclear$current_knowledge[24] <- 'endemic'
+unclear$reason[24] <- 'taxonomic error in indo data'
+
+unclear$current_knowledge[25] <- 'non-endemic'
+unclear$reason[25] <- 'found in americas'
+
+unclear$current_knowledge[26] <- 'non-endemic'
+unclear$reason[26] <- 'found in PNG POWO taxonomic confusion'
+
+unclear$current_knowledge[27] <- 'endemic'
+unclear$reason[27] <- 'POWO error'
+
+unclear$current_knowledge[28] <- 'non-endemic'
+unclear$reason[28] <- 'taxonomic uncertainty'
+
+unclear$current_knowledge[29] <- 'non-endemic'
+unclear$reason[29] <- 'dist in South America'
+
+unclear$current_knowledge[30] <- 'non-endemic'
+unclear$reason[30] <- 'dist in PNG'
+
+unclear$current_knowledge[31] <- 'endemic'
+unclear$reason[31] <- 'introdced to india - POWO mismatch'
+
+unclear$current_knowledge[32] <- 'endemic'
+unclear$reason[32] <- 'ALA error (Georgiella species entered as Georgeantha'
+
+unclear$current_knowledge[33] <- 'non-endemic'
+unclear$reason[33] <- 'Madagascar distribution'
+
+unclear$current_knowledge[34] <- 'endemic'
+unclear$reason[34] <- 'introdced to New Zealand - POWO mismatch'
+
+unclear$current_knowledge[35] <- 'non-endemic'
+unclear$reason[35] <- 'taxonomic confusion - synonym w justicia'
+
+unclear$current_knowledge[36] <- 'endemic'
+unclear$reason[36] <- 'endemic to lord howe - record in NZ?'
+
+unclear$current_knowledge[37] <- 'endemic'
+unclear$reason[37] <- 'taxonomic confusion - unplaced in POWO'
+
+unclear$current_knowledge[38] <- 'endemic'
+unclear$reason[38] <- 'ALA data error'
+
+unclear$current_knowledge[39] <- 'endemic'
+unclear$reason[39] <- 'ALA data error'
+
+unclear$current_knowledge[40] <- 'non-endemic'
+unclear$reason[40] <- 'distribution in Chile'
+
+unclear$current_knowledge[41] <- 'endemic'
+unclear$reason[41] <- 'ALA data error'
+
+unclear$current_knowledge[42] <- 'non-endemic'
+unclear$reason[42] <- 'species found in Africa, Asia, Australia'
+
+unclear$current_knowledge[43] <- 'endemic'
+unclear$reason[43] <- 'Indo data error'
+
+unclear$current_knowledge[44] <- 'non-endemic'
+unclear$reason[44] <- 'species endemic to Norfolk Island'
+
+unclear$current_knowledge[45] <- 'endemic'
+unclear$reason[45] <- 'introduced to NZ and India'
+
+unclear$current_knowledge[46] <- 'endemic'
+unclear$reason[46] <- 'ALA data error'
+
+unclear$current_knowledge[47] <- 'endemic'
+unclear$reason[47] <- 'ALA data error'
+
+unclear$current_knowledge[48] <- 'endemic'
+unclear$reason[48] <- 'introduced to India'
+
+unclear$current_knowledge[49] <- 'endemic'
+unclear$reason[49] <- 'introduced to Czechia'
+
+unclear$current_knowledge[50] <- 'non-endemic'
+unclear$reason[50] <- 'species found in Americas and Australia'
+
+unclear$current_knowledge[51] <- 'non-endemic'
+unclear$reason[51] <- 'species found in Europe, Africa, Asia, Australia'
+
+unclear$current_knowledge[52] <- 'endemic'
+unclear$reason[52] <- 'WVCP data error'
+
+unclear$current_knowledge[53] <- 'endemic'
+unclear$reason[53] <- 'ALA data error'
+
+unclear$current_knowledge[54] <- 'endemic'
+unclear$reason[54] <- 'introduced to Great Britain'
+
+unclear$current_knowledge[55] <- 'endemic'
+unclear$reason[55] <- 'introduced to Great Britain'
+
+unclear$current_knowledge[56] <- 'non-endemic'
+unclear$reason[56] <- 'synonym for Ochrosia, found across SE & E asia' #Neisosperma
+
+unclear$current_knowledge[57] <- 'non-endemic'
+unclear$reason[57] <- 'synonym for Apostasia, found in SE Asia' #Niemeyera
+
+unclear$current_knowledge[58] <- 'endemic'
+unclear$reason[58] <- 'Limited PNG occurrence - introduced, flagged as basis of record invalid' #Oraniopsis
+
+unclear$current_knowledge[59] <- 'non-endemic'
+unclear$reason[59] <- 'Known to be native to Bolivia and Chile' #Orites
+
+unclear$current_knowledge[60] <- 'non-endemic'
+unclear$reason[60] <- 'Known to be native to Mexico and South America' #Orthrosanthus
+
+unclear$current_knowledge[61] <- 'non-endemic'
+unclear$reason[61] <- 'Cosmopolitan genera - synonym: Hemionitis' #Paraceterach
+
+unclear$current_knowledge[62] <- 'endemic'
+unclear$reason[62] <- 'Data error - single preserved specimen from PNG' #Peripentadenia
+
+unclear$current_knowledge[63] <- 'non-endemic'
+unclear$reason[63] <- 'synonym for Arthrochilus- single sp. in PNG' #Phoringopsis
+
+unclear$current_knowledge[64] <- 'non-endemic'
+unclear$reason[64] <- 'synonym for Phreatia' #Plexaure
+
+unclear$current_knowledge[65] <- 'non-endemic'
+unclear$reason[65] <- 'synonym for Caltha' #Psychrophila
+
+unclear$current_knowledge[66] <- 'endemic'
+unclear$reason[66] <- 'WCVP Data error - single 200 year old record in NZ' #Pyrorchis
+
+unclear$current_knowledge[67] <- 'endemic'
+unclear$reason[67] <- 'Data duplication of incorrect point' #Rhinerrhiza
+
+unclear$current_knowledge[68] <- 'non-endemic'
+unclear$reason[68] <- 'synonym for Phreatia' #Rhipidorchis
+
+unclear$current_knowledge[69] <- 'endemic'
+unclear$reason[69] <- 'Introduced and grown as an ornamental' #Rhodanthe
+
+unclear$current_knowledge[70] <- 'endemic'
+unclear$reason[70] <- 'Introduced into NZ, UK, & USA' #Rumicastrum
+
+unclear$current_knowledge[71] <- 'non-endemic'
+unclear$reason[71] <- 'Synonym with Goodenia'
+
+unclear$current_knowledge[72] <- 'endemic'
+unclear$reason[72] <- 'wcvp incorrect, found in PNG'
+
+unclear$current_knowledge[73] <- 'endemic'
+unclear$reason[73] <- 'Taxonomy mix up'
+
+unclear$current_knowledge[74] <- 'non-endemic'
+unclear$reason[74] <- 'Found in PNG and Malaysia as well'
+
+unclear$current_knowledge[75] <- 'non-endemic'
+unclear$reason[75] <- 'Synonym with Brachypterum, found in southern Asia'
+
+unclear$current_knowledge[76] <- 'endemic'
+unclear$reason[76] <- 'Outlier in Indo data, only one point'
+
+unclear$current_knowledge[77] <- 'endemic'
+unclear$reason[77] <- 'Introduced to Britain'
+
+unclear$current_knowledge[78] <- 'endemic'
+unclear$reason[78] <- 'Small numbers outside, botanical gardens'
+
+unclear$current_knowledge[79] <- 'non-endemic'
+unclear$reason[79] <- 'Synonym with Aleurites'
+
+unclear$current_knowledge[80] <- 'non-endemic'
+unclear$reason[80] <- 'Synonym with Ardisia'
+
+unclear$current_knowledge[81] <- 'non-endemic'
+unclear$reason[81] <- 'Found in South America as well'
+
+unclear$current_knowledge[82] <- 'endemic'
+unclear$reason[82] <- 'Error in occurrence data, single occurrences outside Australia (oriental/botanical gardens)'
+
+unclear$current_knowledge[83] <- 'endemic'
+unclear$reason[83] <- 'taxonomic within genus'
+
+unclear$current_knowledge[84] <- 'non-endemic'
+unclear$reason[84] <- 'Native to US and found else where in the world'
+
+unclear$current_knowledge[85] <- 'non-endemic'
+unclear$reason[85] <- 'Found in NZ, ALA incorrect'
+
+unclear$current_knowledge[86] <- 'non-endemic'
+unclear$reason[86] <- 'Found in New Caledonia and Papua New Guinea'
+
+unclear$current_knowledge[87] <- 'non-endemic'
+unclear$reason[87] <- 'Found in Myanmar'
+
+#remove unclears from ausplants df
+ausplants <- ausplants[ausplants$current_knowledge != "unclear", ]
+
+#add back now classified 'unclear' genera
+ausplants <- rbind(ausplants, unclear[1:13])
+
+#order alphabetically
+ausplants <- ausplants[order(ausplants$genus), ]
+
+#rename current_knowlege column to endemism_status
+colnames(ausplants)[colnames(ausplants) == 'current_knowledge'] <- 'endemism_status'
+
+
+write.csv(ausplants, 'intermediate_data/summary_endemism.csv')
+```
+
+### Adding AusTrait Dispersal Data
+
+create df with all Australian genera for comparison
+
+```{r}
+library(austraits)
+
+aus_genera <- read_csv('data/australian_flora/genus_level_endemism_estimate.csv')
+
+ausplants <- read_csv('intermediate_data/summary_endemism.csv')
+
+#create non-endemic subset where proportion endemic aus species was <1 (from 2022 Big Data Project)
+non_end <- subset(aus_genera, prop_endemic < 1)
+
+#create endemism classification column
+non_end$endemism_status <- 'non-endemic'
+
+
+ausplants <- rbind(non_end[ , c(1,4)], ausplants[ , c(2,14)])
+
+#load austraits
+devtools::install_github("traitecoevo/austraits")
+austraits <- load_austraits(version = "4.1.0", path = "intro/downloads")
+
+#make genus_list from our australian genera df
+genus_list <- ausplants$genus
+
+#now select the categorical traits we want to extract - dispersal appendage, syndrome, plant growth form using the extract_trait function
+cat_traits <- austraits %>% extract_trait(c('dispersal_appendage', 'dispersal_syndrome', 'plant_growth_form'))
+
+#join traits to produce dataframe 
+cat_traits_joined <- left_join(cat_traits[["traits"]], cat_traits[["taxa"]], by = "taxon_name")
+
+#keep only records for genera on our australian genera list
+cat_traits_joined <- cat_traits_joined[cat_traits_joined$genus %in% genus_list, ]
+
+#pivot df such that each row is a genus from the australian genera list, and the most commonly recorded plant growth, dispersal appendage, dispersal syndrome traits are applied for each genus
+austraits_genera <- cat_traits_joined %>%
+  select(genus, trait_name, value) %>%
+  pivot_wider(names_from = trait_name, values_from = value, values_fn = max)
+
+#now the same for seed_traits
+disp_traits <- austraits %>% extract_trait(c('seed_dry_mass', 'plant_height'))
+
+#seed traits joined
+disp_traits_joined <- left_join(disp_traits[["traits"]], disp_traits[["taxa"]], by = "taxon_name")
+
+#keep only records for genera on our australian genera list
+disp_traits_joined <- disp_traits_joined[disp_traits_joined$genus %in% genus_list, ]
+
+#pivot df such that each row is a genus from the australian genera list, and the mean of recorded dry_seed_mass are applied for each genus
+disp_genera <- disp_traits_joined %>%
+  select(genus, trait_name, value) %>%
+  pivot_wider(names_from = trait_name, values_from = value, values_fn = mean)
+
+
+#add categorical traits and numerical seed mass traits together
+austraits_genera <- left_join(austraits_genera, disp_genera, by = 'genus')
+
+write_csv(austraits_genera, 'intermediate_data/all_gen_with_traits.csv')
+
+
+```
+
+## Dispersal Traits
+
+Dispersal traits from AusTraits include:
+
+-   Plant height
+
+-   Seed Mass
+
+-   Dispersal syndrome
+
+-   
+
+### Statistical Tests 
+
+Wilcox rank test used as non-parametric options as neither sets of data met normality assumptions.
+
+-   **Plant height \~ Endemicity**
+
+```{r}
+library(rstatix)
+#contains australian genera and selected traits
+austraits_genera <- read_csv('intermediate_data/all_gen_with_traits.csv')
+
+#adding the endemism status to this dataframe for subsequent plotting and tests
+genera <- merge(austraits_genera, ausplants[ , c(1,2)], by = 'genus', all.x = TRUE)
+
+#wilcox rank sum test for plant_height
+height_test <- genera %>% 
+  wilcox_test(plant_height ~ endemism_status) %>%
+  add_significance()
+height_test #p < 0.0.0005, significant
+
+```
+
+-   **Seed Mass \~ endemicity**
+
+    Wilcox rank test as normailty assumption was not met for t test
+
+```{r}
+library(rstatix)
+#wilcox rank sum test for seed_dry_mass
+seed_test <- genera %>% 
+  wilcox_test(seed_dry_mass ~ endemism_status) %>%
+  add_significance()
+seed_test #p < 0.0.000733, significant
+```
+
+-   **dispersal method \~ endemicity**
+
+    Chi squared test
+
+```{r}
+cont_disp <- table(dispersal_filtered$endemism_status, dispersal_filtered$dispersal_syndrome) #creates contingency table for chi squared test to be completed
+
+#chi square test
+chi_disp <- chisq.test(cont_disp, correct = F)
+
+chi_disp #p-value = 0.001494
+```
+
+### Plotting Dispersal Traits
+
+-   seed dry mass \~ endemicity
+
+```{r, seed dry mass ~ endemicity}
+#plotting of seed_dry_mass
+violin_seed <- ggplot(genera, aes(x = endemism_status, y = seed_dry_mass, fill = endemism_status)) +
+  geom_violin() + #violin plot
+  scale_fill_brewer() +
+  labs(fill = 'Endemic status', x = 'Endemic status', y = 'log dry seed mass (mg)', title = 'Mean seed mass of endemic and non-endemic genera') + 
+  labs(title = "", y = "Log Dry Seed Mass (mg)", x ="Endemic Status") +
+  #scale_y_log10() +
+  scale_y_log10(labels = function(x) sprintf("%.2f", x)) #plots y axis natural log +
+  scale_fill_manual(values = c("lemonchiffon1", "lightsalmon")) #colours +
+  geom_boxplot(width=0.05) +
+  theme_pubr() + theme(text = element_text(family = "Helvetica"), 
+                          axis.title = element_text(face = "bold", size = 12), 
+                          legend.title = element_text(face = "bold", size = 11)) #ggplot appearance theme
+
+violin_seed
+
+ggsave('violin_seed.png', violin_seed, width = 7, height = 5)
+```
+
+-   Plant height plots
+
+```{r, Plant height plots}
+#plant height plots
+violin_height <- ggplot(genera, aes(x = endemism_status, y = plant_height, fill = endemism_status)) +
+  geom_violin() + #violin plot
+  scale_fill_brewer() +
+  labs(title = 'Mean plant height of endemic and non-endemic genera', fill = 'Endemic status', x = 'Endemic status', y = 'log plant height (cm)')  +
+  labs(title = "", y = "Log Plant Height (cm)", x = "Endemic Status") +
+  scale_fill_manual(values = c("lemonchiffon1", "lightsalmon"))  + #colours
+  scale_y_log10(n.breaks = 7) + #denotes number of y ticks as 7
+  geom_boxplot(width=0.05) +
+  theme_pubr() + theme(text = element_text(family = "Helvetica"), 
+                          axis.title = element_text(face = "bold", size = 12), 
+                          legend.title = element_text(face = "bold", size = 11)) #appearance theme
+
+violin_height
+
+ggsave('violin_height.png', violin_height, width = 7, height = 5)
+```
+
+-   Barchart of Dispersal Syndrome
+
+```{r, Dispersal syndrome plot}
+dispersal_filtered <- genera %>%
+  filter(dispersal_syndrome %in% c('anemochory', 'hydrochory', 'barochory', 'endozoochory', 'zoochory', 'myrmecochory', 'epizoochory')) #filtering for listed dispersal traits
+
+dispersal_filtered <- dispersal_filtered %>%
+  mutate(dispersal_syndrome = ifelse(dispersal_syndrome %in% c('epizoochory', 'endozoochory'), 'zoochory', dispersal_syndrome)) #contracting into one
+
+proportions_disp <- dispersal_filtered %>% #calculating proportions of dispersal syndrome for standardised view
+  group_by(endemism_status, dispersal_syndrome) %>%
+  summarize(count = n()) %>%
+  group_by(endemism_status) %>%
+  mutate(proportion = count / sum(count))
+
+ggplot(proportions_disp, aes(x = endemism_status, y = proportion, fill = dispersal_syndrome)) +
+  geom_bar(stat = "identity", colour = "black") +
+  labs(x = "Endemism Status", y = "Proportion of genera", fill = 'Simplified growth form') +
+  theme_bw() +
+  scale_fill_brewer(palette = "Dark2") #plotting as barchart
+```
+
+### Combining two dispersal plots together
+
+```{r}
+library(ggpubr)
+dispersalplot <- ggarrange(violin_seed, violin_height, #combines two plots
+                           common.legend = T, #keeps one legend
+                           labels = c("A)", "B)")) #lbels left and roight frame
+dispersalplot
+ggsave('dispersalcombined.png', dispersalplot, width = 10, height = 6)
+```
+
+## Threatened Status Analysis
+
+-   data preparation for treemap and barplot
+
+```{r}
+data <- read.csv(file = "intermediate_data/summary_current.csv", header = T) #uses old dataframe that only includes threatened status for simplicity.
+treemap_data <- data %>%
+  pivot_longer(cols = Least.Concern:Extinct, names_to = "status", values_to = "count") %>%
+  select(current_knowledge, status,genus, count) %>%
+  subset(count != 0) %>%
+  filter(!(status %in% c("Extinct", "Lower.Risk.conservation.dependent", "Lower.Risk.near.threatened", "Data.Deficient"))) #removes threatened status of no interest
+
+treemap_data <- treemap_data %>%
+  mutate(status = recode(status,
+                         "Least.Concern" = "Least Concern",
+                         "Critically.Endangered" = "Critically Endangered",
+                         "Near.Threatened" = "Near Threatened")) %>% #renames status
+  mutate(current_knowledge = recode(current_knowledge,
+                                    "non-endemic" = "Non-Endemic",
+                                    "endemic" = "Endemic")) #renames status
+
+
+ggsave('threat_bar.png', threat_bar, width = 7, height = 5)
+
+```
+
+### Treemap creation
+
+-   Step 1: arranging data into hierarchical list
+
+```{r}
+# Create a nested list with the desired structure
+nested_list <- split(treemap_data, treemap_data$current_knowledge)
+
+# For each level one element (current_knowledge), split by status and create a named list
+nested_list <- lapply(nested_list, function(sub_df) {
+  status_list <- split(sub_df, sub_df$status)
+  
+  # For each status, create a named list with genus as names and count as values
+  status_list <- lapply(status_list, function(status_df) {
+    genus_list <- as.list(status_df$count)
+    names(genus_list) <- status_df$genus
+    genus_list
+  })
+  
+  status_list
+})
+
+```
+
+-   step 2: create list that code will undersatand for treemap
+
+```{r}
+# | echo: false
+library(RColorBrewer)
+library(highcharter) #plots interactive treemap
+# Process data to create hierarchical structure for treemap
+points <- list()
+regionI <- 0
+
+my_colors <- brewer.pal(9, "Set1")
+
+for (endemicity in names(nested_list)) {
+  regionVal <- 0
+  regionP <- list(
+    id = paste0("id_", regionI),
+    name = endemicity,
+    color = my_colors[regionI + 1] #assigns ids per names 
+  )
+  
+  countryI <- 0
+  for (status in names(nested_list[[endemicity]])) {
+    countryP <- list(
+      id = paste0(regionP$id, "_", countryI),
+      name = status,
+      parent = regionP$id
+    )
+    points[[length(points) + 1]] <- countryP #assigns id per endemic status
+    
+    causeI <- 0
+    for (genera in names(nested_list[[endemicity]][[status]])) {
+      causeP <- list(
+        id = paste0(countryP$id, "_", causeI),
+        name = genera,
+        parent = countryP$id,
+        value = round(as.numeric(nested_list[[endemicity]][[status]][[genera]])) #assigns id per genus
+      )
+      regionVal <- regionVal + causeP$value
+      points[[length(points) + 1]] <- causeP
+      causeI <- causeI + 1
+    }
+    countryI <- countryI + 1
+  }
+  
+  regionP$value <- round(regionVal / countryI)
+  points[[length(points) + 1]] <- regionP
+  regionI <- regionI + 1
+}
+```
+
+-   Step 3: plot tree map
+
+```{r}
+# Create the treemap chart using highcharter
+treemap <- highchart() %>%
+  hc_chart(type = "treemap") %>%
+  hc_add_series(
+    type = "treemap",
+    name = "Regions",
+    layoutAlgorithm = "squarified",
+    allowDrillToNode = TRUE,
+    animationLimit = 1000,
+    dataLabels = list(
+      enabled = FALSE
+    ),
+    levels = list(
+      list(
+        level = 1,
+        dataLabels = list(
+          enabled = TRUE,
+          style = list(fontSize = "14px") #assigns each level of treemap
+        ),
+        borderWidth = 3,
+        borderColor = "black",  # Set the border color here 
+        levelIsConstant = FALSE
+      )
+    ),
+    accessibility = list(exposeAsGroupOnly = TRUE),
+    data = points
+  ) %>%
+  hc_subtitle(
+    text = 'Click points to drill down. Source: IUCN Redlist',
+    align = 'left'
+  ) %>%
+  hc_title(
+    text = 'Threatened Species Status per Endemicity in Australia',
+    align = 'left'
+  )
+
+treemap
+```
+
+### Mapping Distribution
+
+```{r}
+points <-read.csv('locations_endemic_genera_v2.csv') #location data from ala
+all <- read_csv('intermediate_data/summary_current.csv')
+
+non_end <- all %>% 
+  subset(current_knowledge == 'non-endemic') #assigning non-endemic
+
+end <- all %>% 
+  subset(current_knowledge == 'endemic') #assigning endemic
+
+points <- points[!points$genus %in% non_end$genus, ]
+
+points$current_knowledge <- 'endemic'
+
+#download IBRA bioregions
+remotes::install_github("johnbaums/things")
+
+bioregions <- things::ibra7_albers
+
+crs_4326 <- CRS("+init=EPSG:4326")
+bioregions <- spTransform(bioregions, crs_4326)
+
+#convert to sf
+bioregions_df <- st_as_sf(bioregions)
+
+#create sf file for points
+species_points_sf <- points %>% 
+  st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), 
+           crs = st_crs(4326))
+
+#join occurence with bioregions
+species_bioregion_sf <- st_join(species_points_sf, bioregions_df, join = st_within)
+
+#and then it gets different from here
+
+unique_genera_bioregion_sf <- species_bioregion_sf %>%
+  distinct(REG_NAME_7, genus, .keep_all = TRUE)  # .keep_all = TRUE ensures all columns are kept
+
+genera_counts_per_bioregion <- unique_genera_bioregion_sf %>%
+  group_by(REG_NAME_7) %>%
+  summarise(genera_count = n(), REG_NAME_7 = first(REG_NAME_7))
+
+IBRA_grid_bio_gen <- merged_sf %>%
+  as_tibble() %>%
+  mutate(id = REG_NAME_7) %>%
+  full_join(genera_counts_per_bioregion,
+            by = join_by(id == REG_NAME_7)) %>%
+  st_as_sf()
+
+IBRA_grid_bio_gen$area <- NA
+
+IBRA_grid_bio_gen$area <- st_area(IBRA_grid_bio_gen[1])
+
+IBRA_grid_bio_gen$prop_count <- IBRA_grid_bio_gen$genera_count/IBRA_grid_bio_gen$area
+
+# Removing the "[1/m²]" unit from 'prop_count' column
+IBRA_grid_bio_gen$prop_count <- gsub("\\s*\\[1/m²\\]", "", IBRA_grid_bio_gen$prop_count)
+
+# Convert 'prop_count' to numeric (if it's currently stored as character)
+IBRA_grid_bio_gen$prop_count <- as.numeric(IBRA_grid_bio_gen$prop_count)
+
+#to produce density/km2
+IBRA_grid_bio_gen$prop_count <- IBRA_grid_bio_gen$prop_count * 1000000
+
+
+bio_gen_count <- ggplot() +
+  geom_sf(data = IBRA_grid_bio_gen, aes(fill = genera_count), size = .01) +
+  scale_fill_gradientn(colours = c("orange", "blue"), 
+                       na.value = "white", 
+                       labels = scales::comma_format(),
+                       n.breaks = 6,
+                       guide = guide_colourbar(title = "endemic genera")) +
+  coord_sf(ylim = c(-45, -10), 
+           xlim = c(110, 155)) +
+  labs(x = 'longtiude', y = 'latitude') +
+  theme_bw() 
+
+bio_gen_count
+
+ggsave('bio_gen_count.png', plot = bio_gen_count)
+
+bioregion_prop_gen <- ggplot() +
+  geom_sf(data = IBRA_grid_bio_gen, aes(fill = prop_count), size = .01) +
+  scale_fill_gradientn(
+    colours = c("orange", "blue"),
+    na.value = "white",
+    trans = "log10",
+    labels = scales::comma_format(),
+    n.breaks = 6,
+    guide = guide_colourbar(title = "endemic genera \nper km²")
+  ) +
+  coord_sf(ylim = c(-45, -10), 
+           xlim = c(110, 155)) +
+  labs(x = 'longitude', y = 'latitude') +
+  theme_bw()
+
+bioregion_prop_gen
+
+ggsave('bioregion_prop_gen.png', plot = bioregion_prop_gen)
+```
